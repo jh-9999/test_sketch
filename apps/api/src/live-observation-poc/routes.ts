@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { issueCapability, verifyCapability, type LiveObservationPocCapabilityKey } from "./capability.js";
@@ -5,6 +7,7 @@ import { createInMemoryLiveObservationPocStore } from "./observation-store.js";
 import { trafficReceiptSchema } from "./traffic-receipt-schema.js";
 
 const PUBLIC_ERROR = { error: "Invalid live observation request" };
+const COLLECTOR_BODY_LIMIT = 1024;
 const SESSIONS_PATH = "/api/live-observation-poc/sessions";
 const PUBLIC_EVENTS_PATH = "/api/live-observation-poc/public/:observationId/events";
 const STREAM_PATH = "/api/live-observation-poc/sessions/:observationId/stream";
@@ -29,15 +32,6 @@ export function registerLiveObservationPocRoutes(
   app: FastifyInstance,
   dependencies: LiveObservationPocRouteDependencies,
 ): void {
-  app.setErrorHandler((error, request, reply) => {
-    if (isPublicCollectorRequest(request)) {
-      setCorsHeaders(request, reply, dependencies.audienceOrigin);
-      return sendPublicError(reply, getErrorStatusCode(error) ?? 400);
-    }
-
-    return reply.send(error);
-  });
-
   app.post(SESSIONS_PATH, async (request, reply) => {
     if (!(await isAuthorized(dependencies, request))) {
       return sendPublicError(reply, 401);
@@ -60,69 +54,7 @@ export function registerLiveObservationPocRoutes(
     });
   });
 
-  app.options(PUBLIC_EVENTS_PATH, async (request, reply) => {
-    setCorsHeaders(request, reply, dependencies.audienceOrigin);
-    return reply.code(204).send();
-  });
-
-  app.post(
-    PUBLIC_EVENTS_PATH,
-    { bodyLimit: 1024 },
-    async (request, reply) => {
-      setCorsHeaders(request, reply, dependencies.audienceOrigin);
-      const observationId = request.params as { observationId: string };
-      const session = dependencies.store.readSession(observationId.observationId);
-      if (!session) {
-        return sendPublicError(reply, 404);
-      }
-      if (session.status === "expired") {
-        return sendPublicError(reply, 410);
-      }
-
-      const credential = extractCredential(request.headers.authorization);
-      if (
-        !credential ||
-        !verifyCapability({
-          ...dependencies.capability,
-          credential,
-          observationId: session.observationId,
-          tokenVersion: session.tokenVersion,
-          expiresAt: session.expiresAt,
-          now: dependencies.now(),
-        })
-      ) {
-        return sendPublicError(reply, 401);
-      }
-
-      const parsedReceipt = trafficReceiptSchema.safeParse(request.body);
-      if (!parsedReceipt.success) {
-        return sendPublicError(reply, 400);
-      }
-
-      const outcome = dependencies.store.collectReceipt({
-        observationId: session.observationId,
-        receipt: parsedReceipt.data,
-      });
-      if (outcome === "not_found") {
-        return sendPublicError(reply, 404);
-      }
-      if (outcome === "expired") {
-        return sendPublicError(reply, 410);
-      }
-
-      const currentSession = dependencies.store.readSession(session.observationId);
-      if (!currentSession) {
-        return sendPublicError(reply, 404);
-      }
-
-      return reply
-        .code(outcome === "accepted" ? 202 : 200)
-        .send({
-          accepted: outcome === "accepted",
-          acceptedEventCount: currentSession.acceptedEventCount,
-        });
-    },
-  );
+  registerPublicCollector(app, dependencies);
 
   app.get(STREAM_PATH, async (request, reply) => {
     const observationId = request.params as { observationId: string };
@@ -151,6 +83,88 @@ export function registerLiveObservationPocRoutes(
       },
     );
     request.raw.once("close", unsubscribe);
+  });
+}
+
+function registerPublicCollector(
+  app: FastifyInstance,
+  dependencies: LiveObservationPocRouteDependencies,
+): void {
+  app.register((collector, _options, done) => {
+    collector.removeAllContentTypeParsers();
+    collector.addContentTypeParser("*", (request, payload, next) => {
+      next(null, payload);
+    });
+
+    collector.options(PUBLIC_EVENTS_PATH, async (request, reply) => {
+      setCorsHeaders(request, reply, dependencies.audienceOrigin);
+      return reply.code(204).send();
+    });
+
+    collector.post(PUBLIC_EVENTS_PATH, async (request, reply) => {
+      setCorsHeaders(request, reply, dependencies.audienceOrigin);
+      const observationId = request.params as { observationId: string };
+      const session = dependencies.store.readSession(observationId.observationId);
+      if (!session) {
+        return sendPublicError(reply, 404);
+      }
+      if (session.status === "expired") {
+        return sendPublicError(reply, 410);
+      }
+
+      const credential = extractCredential(request.headers.authorization);
+      if (
+        !credential ||
+        !verifyCapability({
+          ...dependencies.capability,
+          credential,
+          observationId: session.observationId,
+          tokenVersion: session.tokenVersion,
+          expiresAt: session.expiresAt,
+          now: dependencies.now(),
+        })
+      ) {
+        return sendPublicError(reply, 401);
+      }
+
+      const rawBody = await readCollectorBody(request.body);
+      if (rawBody === "too_large") {
+        return sendPublicError(reply, 413);
+      }
+      if (rawBody === "invalid") {
+        return sendPublicError(reply, 400);
+      }
+
+      const parsedReceipt = parseCollectorReceipt(rawBody);
+      if (!parsedReceipt) {
+        return sendPublicError(reply, 400);
+      }
+
+      const outcome = dependencies.store.collectReceipt({
+        observationId: session.observationId,
+        receipt: parsedReceipt,
+      });
+      if (outcome === "not_found") {
+        return sendPublicError(reply, 404);
+      }
+      if (outcome === "expired") {
+        return sendPublicError(reply, 410);
+      }
+
+      const currentSession = dependencies.store.readSession(session.observationId);
+      if (!currentSession) {
+        return sendPublicError(reply, 404);
+      }
+
+      return reply
+        .code(outcome === "accepted" ? 202 : 200)
+        .send({
+          accepted: outcome === "accepted",
+          acceptedEventCount: currentSession.acceptedEventCount,
+        });
+    });
+
+    done();
   });
 }
 
@@ -197,19 +211,62 @@ function setCorsHeaders(
   reply.header("Access-Control-Allow-Headers", "Authorization, Content-Type");
 }
 
-function isPublicCollectorRequest(request: FastifyRequest): boolean {
-  return request.raw.url?.startsWith("/api/live-observation-poc/public/") ?? false;
-}
-
-function getErrorStatusCode(error: unknown): number | undefined {
-  if (
-    typeof error !== "object" ||
-    error === null ||
-    !("statusCode" in error) ||
-    typeof error.statusCode !== "number"
-  ) {
-    return undefined;
+async function readCollectorBody(
+  body: unknown,
+): Promise<Buffer | "too_large" | "invalid"> {
+  if (!isAsyncIterable(body)) {
+    return "invalid";
   }
 
-  return error.statusCode;
+  const chunks: Buffer[] = [];
+  let length = 0;
+
+  try {
+    for await (const value of body) {
+      const chunk = toBuffer(value);
+      if (!chunk) {
+        return "invalid";
+      }
+
+      length += chunk.byteLength;
+      if (length > COLLECTOR_BODY_LIMIT) {
+        return "too_large";
+      }
+      chunks.push(chunk);
+    }
+  } catch {
+    return "invalid";
+  }
+
+  return Buffer.concat(chunks);
+}
+
+function parseCollectorReceipt(rawBody: Buffer) {
+  try {
+    const parsedReceipt = trafficReceiptSchema.safeParse(
+      JSON.parse(rawBody.toString("utf8")),
+    );
+    return parsedReceipt.success ? parsedReceipt.data : null;
+  } catch {
+    return null;
+  }
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Symbol.asyncIterator in value
+  );
+}
+
+function toBuffer(value: unknown): Buffer | null {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+  if (typeof value === "string" || value instanceof Uint8Array) {
+    return Buffer.from(value);
+  }
+
+  return null;
 }

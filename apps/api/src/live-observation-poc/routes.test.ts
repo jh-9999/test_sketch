@@ -303,6 +303,78 @@ test("returns the generic public error for malformed collector JSON", async (t) 
   assert.equal(response.headers["access-control-allow-origin"], audienceOrigin);
 });
 
+test("checks an invalid capability before malformed or oversized collector bodies", async (t) => {
+  const { app, store } = createRouteApp({ authorize: async () => true });
+  t.after(() => app.close());
+  const session = await createSession(app);
+  const invalidHeaders = collectorHeaders("invalid.credential", audienceOrigin);
+
+  const malformed = await app.inject({
+    method: "POST",
+    url: `/api/live-observation-poc/public/${session.observationId}/events`,
+    headers: invalidHeaders,
+    payload: "not-valid-json",
+  });
+  const oversized = await app.inject({
+    method: "POST",
+    url: `/api/live-observation-poc/public/${session.observationId}/events`,
+    headers: invalidHeaders,
+    payload: exactSizedReceipt("3777515f-61c4-40d4-acdf-7cae7f17855a", 1025),
+  });
+
+  for (const response of [malformed, oversized]) {
+    assert.equal(response.statusCode, 401);
+    assert.deepEqual(response.json(), publicError);
+    assert.equal(response.headers["access-control-allow-origin"], audienceOrigin);
+  }
+  assert.equal(store.readSession(session.observationId)?.acceptedEventCount, 0);
+});
+
+test("looks up missing and expired observations before parsing malformed collector bodies", async (t) => {
+  const { app, store, setNow } = createRouteApp({ authorize: async () => true });
+  t.after(() => app.close());
+  const activeSession = await createSession(app);
+  setNow(startedAt + 15 * 60 * 1000);
+  const headers = collectorHeaders("invalid.credential", audienceOrigin);
+
+  const missing = await app.inject({
+    method: "POST",
+    url: "/api/live-observation-poc/public/missing/events",
+    headers,
+    payload: "not-valid-json",
+  });
+  const expired = await app.inject({
+    method: "POST",
+    url: `/api/live-observation-poc/public/${activeSession.observationId}/events`,
+    headers,
+    payload: "not-valid-json",
+  });
+
+  assert.equal(missing.statusCode, 404);
+  assert.deepEqual(missing.json(), publicError);
+  assert.equal(missing.headers["access-control-allow-origin"], audienceOrigin);
+  assert.equal(expired.statusCode, 410);
+  assert.deepEqual(expired.json(), publicError);
+  assert.equal(expired.headers["access-control-allow-origin"], audienceOrigin);
+  assert.equal(store.readSession(activeSession.observationId)?.acceptedEventCount, 0);
+});
+
+test("keeps unrelated JSON parser errors outside the collector's generic error scope", async (t) => {
+  const { app } = createRouteApp({ authorize: async () => true });
+  t.after(() => app.close());
+  app.post("/unrelated-json", async () => ({ ok: true }));
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/unrelated-json",
+    headers: { "content-type": "application/json" },
+    payload: "not-valid-json",
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json<{ code: string }>().code, "FST_ERR_CTP_INVALID_JSON_BODY");
+});
+
 test("looks up a missing observation before capability verification and returns generic 404", async (t) => {
   const { app } = createRouteApp({ authorize: async () => true });
   t.after(() => app.close());
