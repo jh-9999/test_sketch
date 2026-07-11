@@ -1,0 +1,45 @@
+#!/bin/bash
+set -euo pipefail
+
+# Disposable live-observation PoC bootstrap. The bundle must contain a
+# production package.json, package-lock.json, and executable traffic-server entrypoint.
+BUNDLE_URL=${traffic_api_bundle_url_json}
+APP_DIRECTORY="/opt/live-observation-traffic"
+BUNDLE_ARCHIVE="/tmp/live-observation-traffic.tar.gz"
+
+dnf install -y curl nodejs tar
+
+rm -rf "$APP_DIRECTORY"
+install -d -m 0755 "$APP_DIRECTORY"
+curl --fail --show-error --location --proto '=https' --tlsv1.2 "$BUNDLE_URL" --output "$BUNDLE_ARCHIVE"
+tar -xzf "$BUNDLE_ARCHIVE" --strip-components=1 -C "$APP_DIRECTORY"
+
+test -f "$APP_DIRECTORY/package.json"
+test -f "$APP_DIRECTORY/package-lock.json"
+test -x "$APP_DIRECTORY/traffic-server"
+
+cd "$APP_DIRECTORY"
+npm ci --omit=dev
+
+cat >/etc/systemd/system/live-observation-traffic.service <<'UNIT'
+[Unit]
+Description=Disposable live-observation traffic API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/live-observation-traffic
+Environment=NODE_ENV=production
+Environment=PORT=3000
+ExecStart=/opt/live-observation-traffic/traffic-server
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now live-observation-traffic.service
