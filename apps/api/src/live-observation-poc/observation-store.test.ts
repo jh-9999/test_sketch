@@ -16,10 +16,18 @@ function receipt(eventId: string): TrafficReceipt {
   };
 }
 
-function createStore(initialNow = start) {
+function createStore(initialNow = start, advanceAfterClockRead = false) {
   let currentNow = initialNow;
+  let clockCallCount = 0;
   const store = createInMemoryLiveObservationPocStore({
-    now: () => currentNow,
+    now: () => {
+      clockCallCount += 1;
+      const clockValue = currentNow;
+      if (advanceAfterClockRead) {
+        currentNow += 1;
+      }
+      return clockValue;
+    },
     capabilityKid,
   });
 
@@ -27,6 +35,12 @@ function createStore(initialNow = start) {
     store,
     setNow(nextNow: number) {
       currentNow = nextNow;
+    },
+    getClockCallCount() {
+      return clockCallCount;
+    },
+    resetClockCallCount() {
+      clockCallCount = 0;
     },
   };
 }
@@ -127,15 +141,27 @@ test("protects stored sessions from mutations to receipt inputs and read results
 });
 
 test("notifies subscribers synchronously with independent snapshots only for accepted receipts", () => {
-  const { store, setNow } = createStore();
+  const { store, setNow, getClockCallCount, resetClockCallCount } = createStore(
+    start,
+    true,
+  );
   const session = store.createSession();
-  const firstListenerSnapshots: Array<{ acceptedEventCount: number; instanceId: string }> = [];
-  const secondListenerSnapshots: Array<{ acceptedEventCount: number; instanceId: string }> = [];
+  const firstListenerSnapshots: Array<{
+    acceptedEventCount: number;
+    instanceId: string;
+    observedAt: string;
+  }> = [];
+  const secondListenerSnapshots: Array<{
+    acceptedEventCount: number;
+    instanceId: string;
+    observedAt: string;
+  }> = [];
 
   store.subscribe(session.observationId, (snapshot) => {
     firstListenerSnapshots.push({
       acceptedEventCount: snapshot.acceptedEventCount,
       instanceId: snapshot.lastReceipt!.instanceId,
+      observedAt: snapshot.observedAt,
     });
     snapshot.acceptedEventCount = 999;
     snapshot.lastReceipt!.instanceId = "i-mutated-listener";
@@ -144,10 +170,12 @@ test("notifies subscribers synchronously with independent snapshots only for acc
     secondListenerSnapshots.push({
       acceptedEventCount: snapshot.acceptedEventCount,
       instanceId: snapshot.lastReceipt!.instanceId,
+      observedAt: snapshot.observedAt,
     });
   });
 
   setNow(start + 1_000);
+  resetClockCallCount();
   assert.equal(
     store.collectReceipt({
       observationId: session.observationId,
@@ -155,11 +183,20 @@ test("notifies subscribers synchronously with independent snapshots only for acc
     }),
     "accepted",
   );
+  assert.equal(getClockCallCount(), 1);
   assert.deepEqual(firstListenerSnapshots, [
-    { acceptedEventCount: 1, instanceId: "i-0123456789abcdef0" },
+    {
+      acceptedEventCount: 1,
+      instanceId: "i-0123456789abcdef0",
+      observedAt: new Date(start + 1_000).toISOString(),
+    },
   ]);
   assert.deepEqual(secondListenerSnapshots, [
-    { acceptedEventCount: 1, instanceId: "i-0123456789abcdef0" },
+    {
+      acceptedEventCount: 1,
+      instanceId: "i-0123456789abcdef0",
+      observedAt: new Date(start + 1_000).toISOString(),
+    },
   ]);
   assert.deepEqual(store.readSession(session.observationId)?.lastReceipt, receipt("event-1"));
 

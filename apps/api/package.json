@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test src/*.test.ts src/**/*.test.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",
     "start:traffic": "tsx src/live-observation-poc/traffic-server.ts"

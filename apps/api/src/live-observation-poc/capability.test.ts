@@ -134,6 +134,17 @@ test("accepts before expiry and rejects at the expiry boundary", () => {
   );
 });
 
+test("fails closed when the verification clock is not finite", () => {
+  const credential = issueCapability(issueInput);
+
+  for (const now of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    assert.equal(
+      verifyCapability({ ...verificationInput, now, credential }),
+      false,
+    );
+  }
+});
+
 test("validation failures never expose the secret or Authorization value in errors", () => {
   const credential = issueCapability(issueInput);
   const authorization = `LiveObservation ${credential}`;

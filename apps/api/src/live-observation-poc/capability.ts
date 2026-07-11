@@ -33,7 +33,7 @@ export function issueCapability(input: IssueCapabilityInput): string {
 
 export function verifyCapability(input: VerifyCapabilityInput): boolean {
   const expiresAt = Date.parse(input.expiresAt);
-  if (!Number.isFinite(expiresAt) || input.now >= expiresAt) {
+  if (!Number.isFinite(input.now) || !Number.isFinite(expiresAt) || input.now >= expiresAt) {
     return false;
   }
 
