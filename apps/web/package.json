@@ -1,0 +1,14 @@
+{
+  "name": "@sketchcatch/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test features/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.12",
+    "tsx": "^4.20.6"
+  }
+}

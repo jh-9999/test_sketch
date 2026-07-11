@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.superpowers/
+.terraform/
+*.tfstate
+*.tfstate.*
+.env
+.env.*
+!.env.example

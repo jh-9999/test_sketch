@@ -1,0 +1,20 @@
+{
+  "name": "@sketchcatch/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "start:traffic": "tsx src/live-observation-poc/traffic-server.ts"
+  },
+  "dependencies": {
+    "@sketchcatch/types": "workspace:*",
+    "fastify": "^5.5.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.12",
+    "tsx": "^4.20.6"
+  }
+}
