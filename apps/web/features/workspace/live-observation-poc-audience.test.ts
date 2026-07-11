@@ -156,6 +156,32 @@ test("calls the collector only after a valid 2xx JSON traffic receipt", async ()
   assert.deepEqual(calls[0], ["/api/traffic", { method: "POST", cache: "no-store" }]);
 });
 
+test("does not call the collector for an application/jsonp traffic response", async () => {
+  const { sendTrafficReceipt, AUDIENCE_STATUS } = await loadAudienceApp();
+  let calls = 0;
+
+  const result = await sendTrafficReceipt(validConfig, async () => {
+    calls += 1;
+    return jsonResponse(200, validReceipt, "application/jsonp");
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.message, AUDIENCE_STATUS.invalidTrafficReceipt);
+});
+
+test("does not call the collector for an impossible receipt calendar date", async () => {
+  const { sendTrafficReceipt, AUDIENCE_STATUS } = await loadAudienceApp();
+  let calls = 0;
+
+  const result = await sendTrafficReceipt(validConfig, async () => {
+    calls += 1;
+    return jsonResponse(200, { ...validReceipt, receivedAt: "2026-02-31T12:00:01Z" });
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.message, AUDIENCE_STATUS.invalidTrafficReceipt);
+});
+
 test("shows distinct Korean messages for traffic, invalid receipt, and collector failures", async () => {
   const { sendTrafficReceipt, AUDIENCE_STATUS } = await loadAudienceApp();
   const collectorFailure = async (status: number) => {

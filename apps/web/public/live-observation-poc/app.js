@@ -1,7 +1,7 @@
 const REQUIRED_FRAGMENT_NAMES = ["observationId", "collector", "capability"];
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{1,32}\.[A-Za-z0-9_-]{43}$/;
-const ISO_OFFSET_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+const ISO_OFFSET_DATE_TIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 let audienceConfig = null;
 
 export const AUDIENCE_STATUS = Object.freeze({
@@ -86,8 +86,7 @@ export function isValidTrafficReceipt(receipt) {
     typeof instanceId === "string" &&
     instanceId.length > 0 &&
     typeof receivedAt === "string" &&
-    ISO_OFFSET_DATE_TIME_PATTERN.test(receivedAt) &&
-    Number.isFinite(Date.parse(receivedAt))
+    isValidIsoOffsetDateTime(receivedAt)
   );
 }
 
@@ -197,7 +196,51 @@ function isValidAudienceConfig(config) {
 
 function isJsonResponse(response) {
   const contentType = response.headers.get("content-type") || "";
-  return contentType.toLowerCase().includes("application/json");
+  const mediaType = contentType.split(";", 1)[0].trim().toLowerCase();
+  return mediaType === "application/json";
+}
+
+function isValidIsoOffsetDateTime(value) {
+  const match = ISO_OFFSET_DATE_TIME_PATTERN.exec(value);
+  if (match === null) {
+    return false;
+  }
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, offset] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth(year, month) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    return false;
+  }
+
+  if (offset === "Z") {
+    return true;
+  }
+
+  const offsetHour = Number(offset.slice(1, 3));
+  const offsetMinute = Number(offset.slice(4, 6));
+  return offsetHour <= 23 && offsetMinute <= 59;
+}
+
+function daysInMonth(year, month) {
+  if (month === 2) {
+    const isLeapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return isLeapYear ? 29 : 28;
+  }
+
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
 }
 
 function collectorEventsUrl(config) {
